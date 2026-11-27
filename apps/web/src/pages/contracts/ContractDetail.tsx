@@ -13,6 +13,7 @@ import { api } from '../../lib/api';
 import { fmtBRL, fmtDate, fmtDateTime } from '../../lib/format';
 import { Breadcrumb, Button, Chip, EmptyState, ErrorState, FormField, Input, LoadingRows, Notice, Select, Tabs, Textarea } from '../../components/ui/primitives';
 import { Drawer, Modal, useToast } from '../../components/ui/overlay';
+import { EntitySupport } from '../../features/support/EntitySupport';
 import { ContractForm, formFrom, payloadOf, type FormState } from '../../features/contracts/ContractForm';
 import { ProcessPanel } from '../../features/contracts/ProcessPanel';
 import { LedgerPanel } from '../../features/contracts/LedgerPanel';
@@ -31,7 +32,7 @@ import { IssueOfficeModal, OfficesList } from '../../features/offices/ContractOf
 import { AlertsPanel, DocumentsPanel, TimelinePanel, UploadModal, VersionsPanel } from '../../features/contracts/ContractPanels';
 import { DaysLeft, KIND_LABEL, PendBadge, StageChip, TypeChip, errMsg, type ContractDetail } from '../../features/contracts/shared';
 
-type Tab = 'resumo' | 'zenith' | 'empenhos' | 'execucao' | 'aditivos' | 'consumo' | 'extrato' | 'processos' | 'erp' | 'documentos' | 'versoes' | 'notificacoes' | 'projetos' | 'pessoas' | 'historico';
+type Tab = 'resumo' | 'zenith' | 'empenhos' | 'execucao' | 'aditivos' | 'consumo' | 'extrato' | 'processos' | 'erp' | 'documentos' | 'versoes' | 'notificacoes' | 'projetos' | 'pessoas' | 'apoio' | 'historico';
 
 function Info({ label, children }: { label: string; children: React.ReactNode }) {
   return <div><dt className="text-sm text-muted">{label}</dt><dd className="text-ink">{children}</dd></div>;
@@ -43,13 +44,12 @@ function EditDrawer({ c, onClose }: { c: ContractDetail; onClose: () => void }) 
   const [f, setF] = useState<FormState>(() => formFrom(c, c.current));
   const [error, setError] = useState<string | null>(null);
   const save = useMutation({
-    mutationFn: () => { const p = payloadOf(f); return api<{ version: number }>(`/contracts/${c.id}`, { method: 'PUT', body: { ...p.header, version: p.version, reason: f.reason || undefined } }); },
+    mutationFn: () => { const p = payloadOf(f, { allowNoService: !c.current.serviceType }); return api<{ version: number }>(`/contracts/${c.id}`, { method: 'PUT', body: { ...p.header, version: p.version, reason: f.reason || undefined } }); },
     onSuccess: (r) => { qc.invalidateQueries({ queryKey: ['contract', c.id] }); qc.invalidateQueries({ queryKey: ['contracts'] }); toast({ tone: 'success', message: r.version !== c.currentVersion ? `Salvo como versão ${r.version}` : 'Salvo' }); onClose(); },
     onError: (e) => setError(errMsg(e)),
   });
   return (
-    <Drawer open onClose={onClose} title={`Editar contrato ${c.current.number}`} width="lg" footer={<><Button onClick={onClose}>Cancelar</Button><Button variant="primary" loading={save.isPending} onClick={() => { setError(null); save.mutate(); }}>Salvar</Button></>}>
-      {error && <p role="alert" className="mb-3 rounded-md bg-danger-soft px-3 py-2 text-sm text-danger">{error}</p>}
+    <Drawer open onClose={onClose} title={`Editar contrato ${c.current.number}`} width="lg" footer={<>{error && <p role="alert" className="mr-auto max-w-md text-sm font-semibold text-danger">{error}</p>}<Button onClick={onClose}>Cancelar</Button><Button variant="primary" loading={save.isPending} onClick={() => { setError(null); save.mutate(); }}>Salvar</Button></>}>
       <ContractForm value={f} contactId={c.contactId} onChange={(p) => setF((x) => ({ ...x, ...p }))} editing validated={!!c.validatedAt} />
     </Drawer>
   );
@@ -182,6 +182,7 @@ export function ContractDetailPage() {
             { key: 'notificacoes', label: 'Notificações', count: openAlerts.length },
             ...(can('projetos') ? [{ key: 'projetos' as Tab, label: 'Tarefas e projetos' }] : []),
             ...(feature('marketing.abm') ? [{ key: 'pessoas' as Tab, label: 'Pessoas e ABM' }] : []),
+            { key: 'apoio', label: 'Comentários e apoio' },
             { key: 'historico', label: 'Linha do tempo' },
           ]} />
         </div>
@@ -198,7 +199,7 @@ export function ContractDetailPage() {
                 <Info label="Renovação prevista">{fmtDate(v.renewalAt)}</Info>
                 <Info label="Valor global">{fmtBRL(v.totalCents)}</Info>
                 <Info label="Faturamento">{v.billingDay ? `Dia ${v.billingDay}` : '—'}{v.billingTerms ? <span className="block text-sm text-muted">{v.billingTerms}</span> : null}</Info>
-                <Info label="Reajuste">{v.adjustmentIndex ?? '—'}{v.adjustmentBaseDate ? ` · data-base ${fmtDate(v.adjustmentBaseDate)}` : ''}{v.adjustmentRule ? <span className="block text-sm text-muted">{v.adjustmentRule}</span> : null}</Info>
+                <Info label="Reajuste">{v.adjustmentIndex ?? '—'}{v.adjustmentBaseDate ? ` · data-base ${fmtDate(v.adjustmentBaseDate)}` : ''}{v.adjustmentRule ? <span className="block text-sm text-muted">{v.adjustmentRule}</span> : null}{!v.adjustmentBaseDate && c.stage !== 'arquivado' && <span className="mt-1 block text-sm font-semibold text-warning">Sem data-base: o alerta de reajuste não dispara. Preencha em Editar.</span>}</Info>
                 <Info label="Responsável operacional">{c.operationalOwnerName ?? '—'}</Info>
                 <Info label="Sucesso do Cliente">{c.csmName ?? '—'}{c.validatedAt && <span className="block"><ContractJourney contractId={c.id} /></span>}</Info>
                 <Info label="ERP">{c.erpRef ?? <span className="text-[#C2610C]">Cadastro pendente</span>}</Info>
@@ -239,6 +240,7 @@ export function ContractDetailPage() {
           {tab === 'documentos' && <DocumentsPanel c={c} onUpload={(o) => setUpload({ newVersionOf: o.newVersionOf })} onGenerate={() => setGenerate(true)} onSign={setSign} />}
           {tab === 'versoes' && <VersionsPanel c={c} />}
           {tab === 'notificacoes' && <div className="space-y-6"><ContractCommRuns contractId={c.id} /><ReportNotices contractId={c.id} /><AlertsPanel c={c} /></div>}
+          {tab === 'apoio' && <EntitySupport entityType="contrato" entityId={c.id} />}
           {tab === 'historico' && <TimelinePanel c={c} />}
           {tab === 'pessoas' && <EntityPeoplePanel entity="contrato" entityId={c.id} compact />}
           {tab === 'projetos' && <WorkLinks prefill={{ contractId: c.id, contactId: c.contactId, label: `CT-${c.code} · ${c.contact.name}`, kind: 'implantacao', name: `Implantação ${c.contact.name}` }} />}

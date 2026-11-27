@@ -23,6 +23,8 @@ import { ActivityRow } from '../features/ActivityRow';
 import { ClassificationSection } from '../features/Classification';
 import { AccountContracts } from '../features/contracts/AccountContracts';
 import { IxcFinance, IxcOrders } from '../features/ixc/IxcPanels';
+import { EntitySupport } from '../features/support/EntitySupport';
+import { AccountEditButtons } from '../features/accounts/AccountEdit';
 
 type Detail = {
   id: string;
@@ -33,6 +35,7 @@ type Detail = {
   email: string | null;
   segment: Segment;
   city: string | null;
+  nature?: 'publica' | 'privada' | null;
   isProvisional: boolean;
   custom: CustomValues;
   createdAt: string;
@@ -151,7 +154,9 @@ const FUTURE_TABS: Record<string, string> = {};
 
 export function CustomerDetailPage() {
   const { id = '' } = useParams();
-  const { can, feature, action } = useAuth();
+  const { can, feature, action, me } = useAuth();
+  // a conta é da empresa (todos leem); alterar segue o nível: no Próprio, só a do próprio responsável
+  const mayEdit = (c: { ownerId: string | null }) => can('clientes', 'equipe') || (can('clientes') && c.ownerId === me?.user.id);
   const nav = useNavigate();
   const [tab, setTab] = useState(() => new URLSearchParams(window.location.search).get('t') ?? 'resumo');
   const q = useQuery({ queryKey: ['contact', id], queryFn: () => api<Detail>(`/contacts/${id}`) });
@@ -183,6 +188,7 @@ export function CustomerDetailPage() {
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-3">
+          {mayEdit(c) && <AccountEditButtons account={c} />}
           {feature('marketing.abm') && <AddToAbmButton contactId={id} contactName={c.name} />}
           {can('oportunidades') && <Button variant="primary" size="lg" onClick={() => nav('/opportunities/new')}>+ Nova oportunidade</Button>}
         </div>
@@ -209,6 +215,7 @@ export function CustomerDetailPage() {
             { key: 'atendimentos', label: 'Atendimentos/OS' },
             ...(c.segment !== 'residencial' ? [{ key: 'stakeholders', label: 'Stakeholders' }, { key: 'relacoes', label: 'Contas relacionadas' }] : []),
             { key: 'brindes', label: 'Brindes' },
+            { key: 'apoio', label: 'Comentários e apoio' },
           ]} />
         </div>
         <div className="p-5" role="tabpanel">
@@ -264,6 +271,7 @@ export function CustomerDetailPage() {
           {tab === 'stakeholders' && <StakeholdersPanel contactId={c.id} />}
           {tab === 'brindes' && <AccountGifts contactId={c.id} name={c.name} />}
           {tab === 'relacoes' && <AccountRelationsPanel contactId={c.id} />}
+          {tab === 'apoio' && <EntitySupport entityType="conta" entityId={c.id} />}
           {FUTURE_TABS[tab] && <EmptyState title="Ainda sem dados" description={FUTURE_TABS[tab]} />}
         </div>
       </div>

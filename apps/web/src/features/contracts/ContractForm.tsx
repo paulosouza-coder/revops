@@ -54,7 +54,8 @@ const itemsOf = (rows: ItemRow[]): ContractItem[] => rows.filter((r) => r.descri
 export const autoValues = (f: Pick<FormState, 'items' | 'termMonths'>) => contractValuesFromItems(itemsOf(f.items), f.termMonths ? Number(f.termMonths) : null);
 
 /** Monta o corpo para a API. Erros de digitação de valores voltam como mensagem. */
-export function payloadOf(f: FormState) {
+/** `allowNoService`: contratos antigos, cadastrados antes do campo existir, salvam sem escolher o serviço. */
+export function payloadOf(f: FormState, opts: { allowNoService?: boolean } = {}) {
   const items = itemsOf(f.items);
   const auto = autoValues(f);
   const monthlyCents = !f.monthlyAuto && f.monthly.trim() ? toCents(f.monthly) : f.billingType === 'medicao' && !auto.monthlyCents ? 0 : auto.monthlyCents;
@@ -69,7 +70,7 @@ export function payloadOf(f: FormState) {
     : { required: false, sector: null, validatorId: null, dueDay: null, alertDaysBefore: null };
   const dErr = deliveryErrors(f.delivery);
   if (dErr.length) throw new Error(`Endereços de entrega: ${dErr.slice(0, 3).join(' ')}`);
-  if (!f.serviceType) throw new Error('Escolha o serviço do contrato.');
+  if (!f.serviceType && !opts.allowNoService) throw new Error('Escolha o serviço do contrato.');
   const zErr = needsZenith(f.serviceType) ? zenithErrors(f.zenith) : [];
   if (zErr.length) throw new Error(`Cadastro Zenith: falta ${zErr.map((e) => e.message.toLowerCase()).join(', ')}.`);
   const initialBalanceCents = f.initialBalance.trim() ? toCents(f.initialBalance) : 0;
@@ -81,7 +82,7 @@ export function payloadOf(f: FormState) {
       number: f.number.trim(), object: f.object.trim(), signedAt: nul(f.signedAt), startAt: nul(f.startAt), endAt: nul(f.endAt), termMonths: f.termMonths ? Number(f.termMonths) : null,
       activationAt: nul(f.activationAt), billingStartAt: nul(f.billingStartAt), renewalAt: nul(f.renewalAt), monthlyCents, totalCents, billingDay: f.billingDay ? Number(f.billingDay) : null, billingTerms: nul(f.billingTerms),
       items, guarantee, publicTerms, reportTerms, adjustmentIndex: nul(f.adjustmentIndex), adjustmentBaseDate: nul(f.adjustmentBaseDate), adjustmentRule: nul(f.adjustmentRule), specialConditions: nul(f.specialConditions),
-      serviceType: f.serviceType, zenith: needsZenith(f.serviceType) ? normalizeZenith(f.zenith) : null,
+      serviceType: f.serviceType || null, zenith: needsZenith(f.serviceType) ? normalizeZenith(f.zenith) : null,
       deliveryAddresses: { columns: f.delivery.columns.map((c) => c.trim()), rows: f.delivery.rows.map((r) => ({ ...r, address: r.address.trim(), service: r.service?.trim() || null })) },
     },
   };
@@ -166,9 +167,9 @@ function AutoValue({ id, label, auto, autoCents, value, autoHint, onManual, onAu
   );
 }
 
-function Fieldset({ title, children, hint }: { title: string; children: React.ReactNode; hint?: string }) {
+function Fieldset({ title, children, hint, disabled }: { title: string; children: React.ReactNode; hint?: string; disabled?: boolean }) {
   return (
-    <fieldset className="rounded-md border border-line p-4">
+    <fieldset disabled={disabled} className={`rounded-md border border-line p-4 ${disabled ? 'bg-surface-2/60' : ''}`}>
       <legend className="px-1 text-md font-bold text-ink">{title}</legend>
       {hint && <p className="-mt-1 mb-3 text-sm text-muted">{hint}</p>}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">{children}</div>
@@ -181,6 +182,10 @@ export function ContractForm({ value, onChange, editing, validated, contactId }:
   const lookups = useLookups();
   const f = value;
   const users = lookups.data?.users ?? [];
+  // responsável comercial: só quem tem acesso a Contratos (o atual continua na lista)
+  const owners = useQuery({ queryKey: ['contracts', 'commercial-owners'], queryFn: () => api<{ userIds: string[] }>('/contracts/commercial-owners'), staleTime: 60_000 });
+  const [initialOwner] = useState(f.commercialOwnerId);
+  const ownerIds = owners.data ? new Set([...owners.data.userIds, initialOwner].filter(Boolean)) : null;
   const plans = lookups.data?.plans ?? [];
   const auto = useMemo(() => autoValues(f), [f.items, f.termMonths]); // eslint-disable-line react-hooks/exhaustive-deps
   const setItem = (i: number, p: Partial<ItemRow>) => onChange({ items: f.items.map((r, j) => (j === i ? { ...r, ...p } : r)) });
@@ -191,13 +196,19 @@ export function ContractForm({ value, onChange, editing, validated, contactId }:
     <FormField label={label} htmlFor={id} required={required}>
       <Select id={id} value={f[key]} onChange={(e) => onChange({ [key]: e.target.value })}>
         <option value="">{required ? 'Escolha' : key === 'adminOwnerId' ? 'Em aberto' : 'Ninguém'}</option>
-        {users.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+        {users.filter((x) => key !== 'commercialOwnerId' || !ownerIds || ownerIds.has(x.id)).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
       </Select>
     </FormField>
   );
+  // contrato validado: dados contratuais só mudam por aditivo (a API recusa); fica editável o cadastro operacional
+  const lock = !!(editing && validated);
+  // vazio no contrato validado ainda pode ser preenchido (ex.: data-base do reajuste que faltou)
+  const [initial] = useState(f);
+  const lockIf = (v: string) => lock && v.trim() !== '';
   return (
     <div className="space-y-4">
-      <Fieldset title="Contrato">
+      {lock && <p className="border-l-4 border-l-primary bg-primary-soft px-3 py-2 text-sm text-ink" role="note"><strong>Contrato validado.</strong> Objeto, vigência, produtos, valores, reajuste e condições só mudam por aditivo (aba Aditivos); campo de reajuste que ainda está vazio pode ser preenchido aqui. Aqui você ajusta responsáveis, próxima ação, ativação, faturamento, endereços, relatório, garantia e Zenith.</p>}
+      <Fieldset title="Contrato" disabled={lock}>
         <FormField label="Número do contrato" htmlFor="cf-number" required><Input id="cf-number" value={f.number} onChange={(e) => onChange({ number: e.target.value })} placeholder="Ex.: 045/2025" /></FormField>
         <FormField label="Tipo de contrato" htmlFor="cf-btype" hint={BILLING_TYPE_HINTS[f.billingType]}>
           <Select id="cf-btype" value={f.billingType} onChange={(e) => onChange({ billingType: e.target.value as BillingType })}>{BILLING_TYPES.map((t) => <option key={t} value={t}>{BILLING_TYPE_LABELS[t]}</option>)}</Select>
@@ -215,7 +226,7 @@ export function ContractForm({ value, onChange, editing, validated, contactId }:
         <FormField label="Objeto" htmlFor="cf-object" required className="sm:col-span-2 lg:col-span-3"><Textarea id="cf-object" className="min-h-[64px]" value={f.object} onChange={(e) => onChange({ object: e.target.value })} /></FormField>
       </Fieldset>
 
-      <fieldset className="rounded-md border border-line p-4">
+      <fieldset disabled={lock} className={`rounded-md border border-line p-4 ${lock ? 'bg-surface-2/60' : ''}`}>
         <legend className="px-1 text-md font-bold text-ink">Serviço do contrato<span className="text-danger"> *</span></legend>
         <p className="-mt-1 mb-3 text-sm text-muted">Serviços de telecom são cadastrados também no Zenith; os demais não.</p>
         <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Serviço do contrato">
@@ -226,12 +237,12 @@ export function ContractForm({ value, onChange, editing, validated, contactId }:
       {needsZenith(f.serviceType) && <ZenithFieldset z={f.zenith} set={(zenith) => onChange({ zenith })} />}
 
       <Fieldset title="Datas" hint="Assinatura, vigência, ativação técnica e início do faturamento são datas diferentes. O término sai do prazo; a renovação prevista é o dia seguinte ao término.">
-        <FormField label="Assinatura" htmlFor="cf-signed" required><Input id="cf-signed" type="date" value={f.signedAt} onChange={(e) => onChange({ signedAt: e.target.value })} /></FormField>
-        <FormField label="Início da vigência" htmlFor="cf-start" required><Input id="cf-start" type="date" value={f.startAt} onChange={(e) => setStart(e.target.value)} /></FormField>
-        <FormField label="Prazo (meses)" htmlFor="cf-term"><Input id="cf-term" inputMode="numeric" value={f.termMonths} onChange={(e) => setTerm(e.target.value.replace(/\D/g, ''))} /></FormField>
-        <FormField label="Término da vigência" htmlFor="cf-end" required><Input id="cf-end" type="date" value={f.endAt} onChange={(e) => onChange({ endAt: e.target.value, renewalAt: e.target.value ? addDays(e.target.value, 1) : '' })} /></FormField>
+        <FormField label="Assinatura" htmlFor="cf-signed" required><Input id="cf-signed" disabled={lock} type="date" value={f.signedAt} onChange={(e) => onChange({ signedAt: e.target.value })} /></FormField>
+        <FormField label="Início da vigência" htmlFor="cf-start" required><Input id="cf-start" disabled={lock} type="date" value={f.startAt} onChange={(e) => setStart(e.target.value)} /></FormField>
+        <FormField label="Prazo (meses)" htmlFor="cf-term"><Input id="cf-term" disabled={lock} inputMode="numeric" value={f.termMonths} onChange={(e) => setTerm(e.target.value.replace(/\D/g, ''))} /></FormField>
+        <FormField label="Término da vigência" htmlFor="cf-end" required><Input id="cf-end" disabled={lock} type="date" value={f.endAt} onChange={(e) => onChange({ endAt: e.target.value, renewalAt: e.target.value ? addDays(e.target.value, 1) : '' })} /></FormField>
         <FormField label="Renovação prevista" htmlFor="cf-renewal">
-          <Input id="cf-renewal" type="date" aria-describedby="cf-renewal-alert" value={f.renewalAt} onChange={(e) => onChange({ renewalAt: e.target.value })} />
+          <Input id="cf-renewal" type="date" disabled={lock} aria-describedby="cf-renewal-alert" value={f.renewalAt} onChange={(e) => onChange({ renewalAt: e.target.value })} />
           <p id="cf-renewal-alert" className="flex items-start gap-1.5 rounded-md bg-warning-soft px-2 py-1.5 text-xs text-ink">
             <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0 text-warning" aria-hidden />
             <span><strong>Atenção:</strong> valide no contrato se a renovação é no exato dia{f.renewalAt ? ` (${fmtDate(f.renewalAt)})` : ''} ou um dia antes{f.renewalAt ? ` (${fmtDate(addDays(f.renewalAt, -1))})` : ''}.</span>
@@ -241,12 +252,12 @@ export function ContractForm({ value, onChange, editing, validated, contactId }:
         <FormField label="Início do faturamento" htmlFor="cf-billing" hint="Deixe em branco: o Financeiro registra."><Input id="cf-billing" type="date" value={f.billingStartAt} onChange={(e) => onChange({ billingStartAt: e.target.value })} /></FormField>
         {f.kind === 'publico' && (
           <FormField label="Limite total de vigência" htmlFor="cf-limit" hint="Informe o limite validado. A sugestão usa o prazo de referência do regime.">
-            <div className="flex gap-2"><Input id="cf-limit" type="date" value={f.legalLimitAt} onChange={(e) => onChange({ legalLimitAt: e.target.value })} /><Button type="button" onClick={suggestLimit} disabled={!f.startAt || !LEGAL_REFERENCE_MONTHS[f.legalRegime]}>Sugerir</Button></div>
+            <div className="flex gap-2"><Input id="cf-limit" disabled={lock} type="date" value={f.legalLimitAt} onChange={(e) => onChange({ legalLimitAt: e.target.value })} /><Button type="button" onClick={suggestLimit} disabled={lock || !f.startAt || !LEGAL_REFERENCE_MONTHS[f.legalRegime]}>Sugerir</Button></div>
           </FormField>
         )}
       </Fieldset>
 
-      <fieldset className="rounded-md border border-line p-4">
+      <fieldset disabled={lock} className={`rounded-md border border-line p-4 ${lock ? 'bg-surface-2/60' : ''}`}>
         <legend className="px-1 text-md font-bold text-ink">Produtos e serviços</legend>
         <ItemsImport contactId={contactId ?? null} onItems={(list, mode) => onChange({ items: mode === 'substituir' ? list : [...f.items.filter((x) => x.description.trim()), ...list] })} />
         <ul className="space-y-2">
@@ -280,7 +291,7 @@ export function ContractForm({ value, onChange, editing, validated, contactId }:
         <DeliveryEditor value={f.delivery} onChange={(delivery) => onChange({ delivery })} />
       </section>
 
-      <Fieldset title="Valores e faturamento">
+      <Fieldset title="Valores e faturamento" disabled={lock}>
         {f.billingType === 'medicao' && !editing && <FormField label="Saldo contratado (R$)" htmlFor="cf-balance" required hint="Crédito inicial do contrato; as oportunidades consomem esse saldo."><Input id="cf-balance" inputMode="decimal" value={f.initialBalance} onChange={(e) => onChange({ initialBalance: e.target.value })} placeholder="100.000,00" /></FormField>}
         <AutoValue id="cf-monthly" label={f.billingType === 'recorrente' ? 'Valor mensal (R$)' : 'Valor mensal estimado (R$)'} auto={f.monthlyAuto} autoCents={auto.monthlyCents} value={f.monthly}
           autoHint="Automático: soma dos itens recorrentes." onManual={(monthly) => onChange({ monthly, monthlyAuto: false })} onAuto={() => onChange({ monthlyAuto: true, monthly: '' })} />
@@ -291,10 +302,10 @@ export function ContractForm({ value, onChange, editing, validated, contactId }:
       </Fieldset>
 
       <Fieldset title="Reajuste" hint="Regra própria deste contrato. Reajuste é diferente de repactuação e revisão.">
-        <FormField label="Índice" htmlFor="cf-idx"><Input id="cf-idx" value={f.adjustmentIndex} onChange={(e) => onChange({ adjustmentIndex: e.target.value })} placeholder="IPCA, IGP-M, IST..." /></FormField>
-        <FormField label="Data-base" htmlFor="cf-base"><Input id="cf-base" type="date" value={f.adjustmentBaseDate} onChange={(e) => onChange({ adjustmentBaseDate: e.target.value })} /></FormField>
-        <FormField label="Regra" htmlFor="cf-rule" className="sm:col-span-2 lg:col-span-1"><Input id="cf-rule" value={f.adjustmentRule} onChange={(e) => onChange({ adjustmentRule: e.target.value })} placeholder="Ex.: anual, 12 meses da proposta" /></FormField>
-        <FormField label="Cláusula de renovação" htmlFor="cf-renewal" className="sm:col-span-2 lg:col-span-3" hint="Texto da cláusula do contrato. Vira a variável {{contrato.clausula_renovacao}} dos ofícios"><Textarea id="cf-renewal" rows={3} maxLength={4000} value={f.renewalClause} onChange={(e) => onChange({ renewalClause: e.target.value })} placeholder="Ex.: Cláusula Sexta – O presente contrato poderá ser prorrogado por iguais e sucessivos períodos, até o limite de 120 meses, nos termos do art. 107 da Lei nº 14.133/2021." /></FormField>
+        <FormField label="Índice" htmlFor="cf-idx"><Input id="cf-idx" disabled={lockIf(initial.adjustmentIndex)} value={f.adjustmentIndex} onChange={(e) => onChange({ adjustmentIndex: e.target.value })} placeholder="IPCA, IGP-M, IST..." /></FormField>
+        <FormField label="Data-base" htmlFor="cf-base"><Input id="cf-base" disabled={lockIf(initial.adjustmentBaseDate)} type="date" value={f.adjustmentBaseDate} onChange={(e) => onChange({ adjustmentBaseDate: e.target.value })} /></FormField>
+        <FormField label="Regra" htmlFor="cf-rule" className="sm:col-span-2 lg:col-span-1"><Input id="cf-rule" disabled={lockIf(initial.adjustmentRule)} value={f.adjustmentRule} onChange={(e) => onChange({ adjustmentRule: e.target.value })} placeholder="Ex.: anual, 12 meses da proposta" /></FormField>
+        <FormField label="Cláusula de renovação" htmlFor="cf-renewal-clause" className="sm:col-span-2 lg:col-span-3" hint="Texto da cláusula do contrato. Vira a variável {{contrato.clausula_renovacao}} dos ofícios"><Textarea id="cf-renewal-clause" disabled={lockIf(initial.renewalClause)} rows={3} maxLength={4000} value={f.renewalClause} onChange={(e) => onChange({ renewalClause: e.target.value })} placeholder="Ex.: Cláusula Sexta – O presente contrato poderá ser prorrogado por iguais e sucessivos períodos, até o limite de 120 meses, nos termos do art. 107 da Lei nº 14.133/2021." /></FormField>
       </Fieldset>
 
       <Fieldset title="Responsáveis">
@@ -357,13 +368,13 @@ export function ContractForm({ value, onChange, editing, validated, contactId }:
         </Fieldset>
       )}
 
-      <fieldset className="rounded-md border border-line p-4">
+      <fieldset disabled={lock} className={`rounded-md border border-line p-4 ${lock ? 'bg-surface-2/60' : ''}`}>
         <legend className="px-1 text-md font-bold text-ink">Condições específicas</legend>
         <Textarea aria-label="Condições específicas" className="min-h-[80px]" value={f.specialConditions} onChange={(e) => onChange({ specialConditions: e.target.value })} placeholder="SLA, multas, cláusulas de rescisão, exigências do edital..." />
       </fieldset>
 
       {editing && validated && (
-        <FormField label="Motivo da alteração" htmlFor="cf-reason" required hint="Contrato validado: a alteração gera uma nova versão e a anterior fica no histórico.">
+        <FormField label="Motivo da alteração" htmlFor="cf-reason" required hint="Mudou ativação, faturamento, endereços, relatório, garantia ou Zenith: gera uma nova versão e a anterior fica no histórico.">
           <Input id="cf-reason" value={f.reason} onChange={(e) => onChange({ reason: e.target.value })} placeholder="Ex.: correção do dia de faturamento" />
         </FormField>
       )}

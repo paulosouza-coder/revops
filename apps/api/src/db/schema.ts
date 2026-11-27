@@ -1937,6 +1937,11 @@ export const contractAmendments = pgTable('contract_amendments', {
   groupId: uuid('group_id'),
   /** Reajuste aplicado neste aditivo (%, ex.: 4.5). */
   adjustmentPct: doublePrecision('adjustment_pct'),
+  /** reajuste por item: [{ description, pct, fromCents, toCents }] (vazio quando o percentual vale para o contrato todo) */
+  itemAdjustments: jsonb('item_adjustments').$type<{ description: string; pct: number; fromCents: number; toCents: number }[]>(),
+  /** aditivo de prazo por duração: meses e dias somados ao término anterior */
+  extendMonths: integer('extend_months'),
+  extendDays: integer('extend_days'),
   createdBy: uuid('created_by').references(() => users.id),
   createdAt: createdAt(),
 }, (t) => ({ ctIdx: index('contract_amendments_ct_idx').on(t.contractId, t.signedOn), kindCk: check('contract_amendments_kind_ck', inList('kind', ['acrescimo', 'supressao', 'prazo', 'reajuste', 'reequilibrio', 'itens', 'outro'])) }));
@@ -2383,6 +2388,18 @@ export const negotiationMessages = pgTable(
 );
 
 /** Até onde cada pessoa leu o chat e os comentários de cada negociação (não lidas e menções). */
+/** "Limpar" do sino e das menções: o que aconteceu até esse instante some do painel (cada pessoa, cada painel). */
+export const userFeedClears = pgTable(
+  'user_feed_clears',
+  {
+    tenantId: tenantId(),
+    userId: uuid('user_id').notNull().references(() => users.id),
+    scope: text('scope').notNull(),
+    clearedAt: ts('cleared_at').notNull().defaultNow(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.userId, t.scope] }), scopeCk: check('user_feed_clears_scope_ck', inList('scope', ['sino', 'mencoes'])) }),
+);
+
 export const negotiationReads = pgTable(
   'negotiation_reads',
   {

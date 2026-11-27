@@ -1303,6 +1303,27 @@
       "when": 1795726275205,
       "tag": "0185_caixa_excluida",
       "breakpoints": true
+    },
+    {
+      "idx": 186,
+      "version": "7",
+      "when": 1795787409135,
+      "tag": "0186_aditivo_itens_prazo",
+      "breakpoints": true
+    },
+    {
+      "idx": 187,
+      "version": "7",
+      "when": 1795789533527,
+      "tag": "0187_limpar_notificacoes",
+      "breakpoints": true
+    },
+    {
+      "idx": 188,
+      "version": "7",
+      "when": 1795790998703,
+      "tag": "0188_canais_entrada",
+      "breakpoints": true
     }
   ]
 }
